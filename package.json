@@ -1,0 +1,37 @@
+{
+  "name": "trivix",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint"
+  },
+  "dependencies": {
+    "@privy-io/react-auth": "^1.99.1",
+    "bcryptjs": "^2.4.3",
+    "chart.js": "^4.4.8",
+    "firebase": "^11.2.0",
+    "firebase-tools": "^13.29.1",
+    "framer-motion": "^12.0.6",
+    "lucide-react": "^0.474.0",
+    "next": "^15.1.5",
+    "papaparse": "^5.5.2",
+    "react": "^19.0.0",
+    "react-chartjs-2": "^5.3.0",
+    "react-dom": "^19.0.0",
+    "react-toastify": "^11.0.3",
+    "recharts": "^2.15.1",
+    "thirdweb": "^5.85.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20",
+    "@types/react": "^18",
+    "@types/react-dom": "^18",
+    "autoprefixer": "^10.4.20",
+    "postcss": "^8.5.1",
+    "tailwindcss": "^3.4.17",
+    "typescript": "^5"
+  }
+}
