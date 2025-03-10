@@ -11,7 +11,7 @@ import {
   Landmark,
   BookOpen,
 } from "lucide-react";
-import Header from "../components/Header";
+import Header from "@/app/components/header";
 
 const ProductPage = () => {
   const features = [

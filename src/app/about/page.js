@@ -2,7 +2,7 @@
 import React from "react";
 import Link from "next/link";
 import { Users, Award, Target, Briefcase } from "lucide-react";
-import Header from "../components/Header";
+import Header from "@/app/components/header";
 
 const AboutPage = () => {
   return (

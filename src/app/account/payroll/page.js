@@ -473,6 +473,7 @@ export default function PayrollPage() {
           );
           await setDoc(workerRef, workerData);
           totalAddedSalary += salaryNum; // Add to total
+          setActiveTab("WORKER LIST");
         } catch (workerError) {
           console.error("Error uploading worker:", row, workerError);
           showErrorToast(
@@ -686,9 +687,6 @@ export default function PayrollPage() {
                         <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                           Status
                         </th>
-                        <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">
-                          Actions
-                        </th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-gray-200">
@@ -731,20 +729,12 @@ export default function PayrollPage() {
                             <span
                               className={`px-2 inline-flex text-xs leading-5 font-semibold rounded-full ${
                                 worker.status === "invited"
-                                  ? "bg-green-100 text-green-800"
-                                  : "bg-red-100 text-red-800"
+                                  ? "bg-red-100 text-red-800"
+                                  : "bg-green-100 text-green-800"
                               }`}
                             >
                               {worker.status}
                             </span>
-                          </td>
-                          <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
-                            <button className="p-1 rounded-full hover:bg-gray-100">
-                              <MoreVertical
-                                size={16}
-                                className="text-gray-500"
-                              />
-                            </button>
                           </td>
                         </tr>
                       ))}

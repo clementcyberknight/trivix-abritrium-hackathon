@@ -43,19 +43,32 @@ const formatCurrency = (amount) => {
   }).format(amount);
 };
 
-const formatDate = (dateString) => {
-  if (!dateString) return "";
-  const date = new Date(dateString);
+const formatDate = (dateValue) => {
+  try {
+    if (!dateValue) return "N/A";
 
-  if (isNaN(date.getTime())) {
-    return "Invalid Date";
+    if (typeof dateValue === "object" && "seconds" in dateValue) {
+      return new Date(dateValue.seconds * 1000).toLocaleDateString("en-US", {
+        year: "numeric",
+        month: "short",
+        day: "numeric",
+      });
+    }
+
+    const date = new Date(dateValue);
+    if (isNaN(date.getTime())) {
+      return "N/A";
+    }
+
+    return date.toLocaleDateString("en-US", {
+      year: "numeric",
+      month: "short",
+      day: "numeric",
+    });
+  } catch (error) {
+    console.error("Error formatting date:", error);
+    return "N/A";
   }
-
-  return new Intl.DateTimeFormat("en-US", {
-    year: "numeric",
-    month: "short",
-    day: "numeric",
-  }).format(date);
 };
 
 const PAYMENT_INTERVALS = ["Weekly", "Monthly"];
@@ -93,26 +106,27 @@ export default function PayrollPage() {
   );
   const [nextPaymentDate, setNextPaymentDate] = useState(null); // State for next payment date
 
-  // --- State for Overtime & Bonus Tab ---
-  const [selectedEmployee, setSelectedEmployee] = useState(null);
-  const [overtimeHours, setOvertimeHours] = useState("");
-  const [overtimeDate, setOvertimeDate] = useState("");
-  const [overtimeNotes, setOvertimeNotes] = useState("");
-  const [bonusAmount, setBonusAmount] = useState("");
-  const [bonusReason, setBonusReason] = useState("");
-  const [bonusDate, setBonusDate] = useState("");
-  const [hourlyRate, setHourlyRate] = useState("");
-  const [isUpdating, setIsUpdating] = useState(false);
-
-  const [paymentHistory, setPaymentHistory] = useState([]);
-  const [employees, setEmployees] = useState([]);
-  const [employeeSearch, setEmployeeSearch] = useState("");
-  const [filteredEmployees, setFilteredEmployees] = useState([]);
-
   // --- State for Business Metrics (Overview) ---
   const [totalPayroll, setTotalPayroll] = useState(0);
   const [employeeCount, setEmployeeCount] = useState(0);
   const [ytdPayroll, setYtdPayroll] = useState(0);
+
+  // State to manage the selected payment and the modal visibility
+  const [selectedPayment, setSelectedPayment] = useState(null);
+  const [isModalOpen, setIsModalOpen] = useState(false);
+  const [employees, setEmployees] = useState([]);
+  const [isUpdating, setIsUpdating] = useState(false);
+
+  // Add this new state
+  const [isDeletingSchedule, setIsDeletingSchedule] = useState(false);
+
+  // Add this new state declaration
+  const [paymentHistory, setPaymentHistory] = useState([]);
+
+  // Add these new state variables after other state declarations
+  const [currentPage, setCurrentPage] = useState(1);
+  const [itemsPerPage] = useState(10); // Number of items to show per page
+  const [totalPages, setTotalPages] = useState(1);
 
   const showErrorToast = (message) => {
     toast.error(message, {
@@ -161,7 +175,7 @@ export default function PayrollPage() {
 
   useEffect(() => {
     let unsubscribeEmployees;
-    let unsubscribePayments;
+    let unsubscribePayrolls;
 
     if (firebaseUser && account && account.address) {
       const fetchBusinessData = async () => {
@@ -211,35 +225,52 @@ export default function PayrollPage() {
               }
             );
 
-            const paymentsRef = collection(
+            const payrollsRef = collection(
               db,
               "businesses",
               account.address,
-              "payments"
+              "payrolls"
             );
-            unsubscribePayments = onSnapshot(
-              paymentsRef,
+            unsubscribePayrolls = onSnapshot(
+              payrollsRef,
               (snapshot) => {
-                const paymentsData = snapshot.docs.map((doc) => ({
-                  id: doc.id,
-                  ...doc.data(),
-                }));
-                setPaymentHistory(paymentsData);
+                const payrollData = snapshot.docs
+                  .map((doc) => ({
+                    id: doc.id,
+                    ...doc.data(),
+                  }))
+                  .sort((a, b) => {
+                    // Sort by payrollDate in descending order (newest first)
+                    const dateA = a.payrollDate?.seconds || 0;
+                    const dateB = b.payrollDate?.seconds || 0;
+                    return dateB - dateA;
+                  });
 
-                // Calculate YTD payroll
+                setPaymentHistory(payrollData);
+
+                // Calculate YTD payroll from sorted payroll data
                 const currentYear = new Date().getFullYear();
-                const newYtdPayroll = paymentsData
-                  .filter(
-                    (payment) =>
-                      new Date(payment.date.seconds * 1000).getFullYear() ===
-                        currentYear && payment.status === "Completed"
-                  ) // Corrected date handling and status check
-                  .reduce((acc, payment) => acc + payment.amount, 0); // Ensure amount exists
+                const newYtdPayroll = payrollData
+                  .filter((payroll) => {
+                    const payrollDate = payroll.payrollDate?.seconds
+                      ? new Date(payroll.payrollDate.seconds * 1000)
+                      : null;
+                    return (
+                      payrollDate?.getFullYear() === currentYear &&
+                      payroll.payrollStatus === "Success"
+                    );
+                  })
+                  .reduce(
+                    (acc, payroll) => acc + (payroll.totalAmount || 0),
+                    0
+                  );
                 setYtdPayroll(newYtdPayroll);
               },
               (error) => {
-                console.error("Error fetching payments:", error);
-                showErrorToast(`Error fetching payments: ${error.message}`);
+                console.error("Error fetching payroll history:", error);
+                showErrorToast(
+                  `Error fetching payroll history: ${error.message}`
+                );
               }
             );
 
@@ -299,95 +330,162 @@ export default function PayrollPage() {
 
     return () => {
       if (unsubscribeEmployees) unsubscribeEmployees();
-      if (unsubscribePayments) unsubscribePayments();
+      if (unsubscribePayrolls) unsubscribePayrolls();
     };
   }, [firebaseUser, account, router]);
 
+  // Add this new function after other function declarations
+  const paginate = (items) => {
+    const startIndex = (currentPage - 1) * itemsPerPage;
+    const endIndex = startIndex + itemsPerPage;
+    return items.slice(startIndex, endIndex);
+  };
+
+  // Modify the useEffect that handles filtering to include pagination
   useEffect(() => {
     const filtered = paymentHistory.filter((payment) => {
-      const dateMatch = formatDate(payment.date)
-        .toLowerCase()
-        .includes(searchQuery.toLowerCase());
-      const amountMatch = formatCurrency(payment.amount).includes(
-        searchQuery.toLowerCase()
-      );
-      const typeMatch = payment.type
-        .toLowerCase()
-        .includes(searchQuery.toLowerCase());
+      if (!payment) return false;
+
+      const searchLower = searchQuery.toLowerCase();
+      const dateStr = payment.date ? formatDate(payment.date) : "";
+      const amountStr = payment.amount ? formatCurrency(payment.amount) : "";
+      const typeStr = payment.type ? payment.type.toLowerCase() : "";
+
+      const dateMatch = dateStr.toLowerCase().includes(searchLower);
+      const amountMatch = amountStr.toLowerCase().includes(searchLower);
+      const typeMatch = typeStr.includes(searchLower);
       const filterMatch =
         selectedFilter === "All" || payment.type === selectedFilter;
+
       return (dateMatch || amountMatch || typeMatch) && filterMatch;
     });
-    setFilteredPayments(filtered);
-  }, [searchQuery, selectedFilter, paymentHistory]);
 
-  useEffect(() => {
-    const lowerSearch = employeeSearch.toLowerCase();
-    const results = employees.filter(
-      (employee) =>
-        employee.worker_name?.toLowerCase().includes(lowerSearch) ||
-        employee.role?.toLowerCase().includes(lowerSearch)
+    // Calculate total pages
+    setTotalPages(Math.ceil(filtered.length / itemsPerPage));
+
+    // Reset to first page when filters change
+    if (currentPage > Math.ceil(filtered.length / itemsPerPage)) {
+      setCurrentPage(1);
+    }
+
+    // Apply pagination to filtered results
+    setFilteredPayments(paginate(filtered));
+  }, [searchQuery, selectedFilter, paymentHistory, currentPage, itemsPerPage]);
+
+  // Add this new function to handle page changes
+  const handlePageChange = (pageNumber) => {
+    setCurrentPage(pageNumber);
+  };
+
+  // Replace the existing pagination section with this updated version
+  const PaginationSection = () => {
+    const pageNumbers = [];
+    const maxVisiblePages = 5;
+
+    let startPage = Math.max(1, currentPage - Math.floor(maxVisiblePages / 2));
+    let endPage = Math.min(totalPages, startPage + maxVisiblePages - 1);
+
+    if (endPage - startPage + 1 < maxVisiblePages) {
+      startPage = Math.max(1, endPage - maxVisiblePages + 1);
+    }
+
+    for (let i = startPage; i <= endPage; i++) {
+      pageNumbers.push(i);
+    }
+
+    return (
+      <div className="flex items-center justify-between border-t border-gray-200 bg-white px-4 py-3 sm:px-6 rounded-lg mt-4">
+        <div className="flex flex-1 justify-between sm:hidden">
+          <button
+            onClick={() => handlePageChange(currentPage - 1)}
+            disabled={currentPage === 1}
+            className={`relative inline-flex items-center rounded-md border border-gray-300 bg-white px-4 py-2 text-sm font-medium ${
+              currentPage === 1
+                ? "text-gray-400 cursor-not-allowed"
+                : "text-gray-700 hover:bg-gray-50"
+            }`}
+          >
+            Previous
+          </button>
+          <button
+            onClick={() => handlePageChange(currentPage + 1)}
+            disabled={currentPage === totalPages}
+            className={`relative ml-3 inline-flex items-center rounded-md border border-gray-300 bg-white px-4 py-2 text-sm font-medium ${
+              currentPage === totalPages
+                ? "text-gray-400 cursor-not-allowed"
+                : "text-gray-700 hover:bg-gray-50"
+            }`}
+          >
+            Next
+          </button>
+        </div>
+        <div className="hidden sm:flex sm:flex-1 sm:items-center sm:justify-between">
+          <div>
+            <p className="text-sm text-gray-700">
+              Showing{" "}
+              <span className="font-medium">
+                {Math.min(
+                  (currentPage - 1) * itemsPerPage + 1,
+                  filteredPayments.length
+                )}
+              </span>{" "}
+              to{" "}
+              <span className="font-medium">
+                {Math.min(currentPage * itemsPerPage, filteredPayments.length)}
+              </span>{" "}
+              of <span className="font-medium">{paymentHistory.length}</span>{" "}
+              results
+            </p>
+          </div>
+          <div>
+            <nav
+              className="isolate inline-flex -space-x-px rounded-md shadow-sm"
+              aria-label="Pagination"
+            >
+              <button
+                onClick={() => handlePageChange(currentPage - 1)}
+                disabled={currentPage === 1}
+                className={`relative inline-flex items-center rounded-l-md px-2 py-2 ${
+                  currentPage === 1
+                    ? "text-gray-300 cursor-not-allowed"
+                    : "text-gray-400 hover:bg-gray-50"
+                } ring-1 ring-inset ring-gray-300`}
+              >
+                <span className="sr-only">Previous</span>
+                <ChevronRight size={16} className="rotate-180" />
+              </button>
+
+              {pageNumbers.map((number) => (
+                <button
+                  key={number}
+                  onClick={() => handlePageChange(number)}
+                  className={`relative inline-flex items-center px-4 py-2 text-sm font-semibold ${
+                    currentPage === number
+                      ? "bg-blue-600 text-white"
+                      : "text-gray-900 ring-1 ring-inset ring-gray-300 hover:bg-gray-50"
+                  }`}
+                >
+                  {number}
+                </button>
+              ))}
+
+              <button
+                onClick={() => handlePageChange(currentPage + 1)}
+                disabled={currentPage === totalPages}
+                className={`relative inline-flex items-center rounded-r-md px-2 py-2 ${
+                  currentPage === totalPages
+                    ? "text-gray-300 cursor-not-allowed"
+                    : "text-gray-400 hover:bg-gray-50"
+                } ring-1 ring-inset ring-gray-300`}
+              >
+                <span className="sr-only">Next</span>
+                <ChevronRight size={16} />
+              </button>
+            </nav>
+          </div>
+        </div>
+      </div>
     );
-    setFilteredEmployees(results);
-  }, [employeeSearch, employees]);
-
-  const calculateNextPaymentDate = (interval, selectedDay, specificDate) => {
-    const today = new Date();
-    let nextPaymentDate = new Date();
-
-    switch (interval) {
-      case "Weekly":
-        const weekdays = [
-          "Sunday",
-          "Monday",
-          "Tuesday",
-          "Wednesday",
-          "Thursday",
-          "Friday",
-          "Saturday",
-        ];
-        const currentDay = today.getDay();
-        const targetDay = weekdays.indexOf(selectedDay);
-        let daysUntilTarget = targetDay - currentDay;
-
-        if (daysUntilTarget <= 0) {
-          daysUntilTarget += 7;
-        }
-        nextPaymentDate.setDate(today.getDate() + daysUntilTarget);
-        break;
-
-      case "Monthly":
-        nextPaymentDate.setMonth(today.getMonth() + 1);
-
-        if (selectedDay === "Last working day") {
-          nextPaymentDate.setMonth(nextPaymentDate.getMonth() + 1, 0);
-          while (
-            nextPaymentDate.getDay() === 0 ||
-            nextPaymentDate.getDay() === 6
-          ) {
-            nextPaymentDate.setDate(nextPaymentDate.getDate() - 1);
-          }
-        } else {
-          nextPaymentDate.setDate(specificDate);
-          while (
-            nextPaymentDate.getDay() === 0 ||
-            nextPaymentDate.getDay() === 6
-          ) {
-            nextPaymentDate.setDate(nextPaymentDate.getDate() + 1);
-          }
-        }
-        break;
-    }
-
-    while (
-      nextPaymentDate.getDay() === 0 ||
-      nextPaymentDate.getDay() === 6 ||
-      nextPaymentDate < today
-    ) {
-      nextPaymentDate.setDate(nextPaymentDate.getDate() + 1);
-    }
-
-    return nextPaymentDate;
   };
 
   const handlePayrollScheduleSave = async () => {
@@ -513,116 +611,56 @@ export default function PayrollPage() {
     return s[(v - 20) % 10] || s[v] || s[0];
   };
 
-  const handleBonuspayment = async (type) => {
-    if (!firebaseUser || !account || !account.address) {
-      showErrorToast("Failed to Authenticate User.");
-      return;
-    }
-    if (!selectedEmployee) {
-      showErrorToast("Please select an employee.");
-      return;
-    }
-    if (type === "bonus" && (!bonusAmount || !bonusDate || !bonusReason)) {
-      showErrorToast("Please fill in all Bonus details.");
+  // Add this new function for deleting payroll schedule
+  const handleDeleteSchedule = async () => {
+    if (!firebaseUser || !account?.address) {
+      showErrorToast("Authentication required");
       return;
     }
 
-    const db = getFirestore(app);
+    setIsDeletingSchedule(true);
+
     try {
-      const newPayment = {
-        date: serverTimestamp(),
-        paymentId: paymentId,
-        paymentHash: "",
-        employeeId: selectedEmployee,
-        status: "Pending",
-        type: type,
-        amount: parseFloat(bonusAmount),
-        bonusAmount: parseFloat(bonusAmount),
-        bonusReason: bonusReason,
-      };
-      const paymentsRef = collection(
-        db,
-        "businesses",
-        account.address,
-        "payments"
-      );
-      const bonuspaymentsRef = collection(
-        db,
-        "businesses",
-        account.address,
-        "BonusPayments"
-      );
-      await addDoc(paymentsRef, newPayment);
-      await addDoc(bonuspaymentsRef, newPayment);
-      showSuccessToast(`Bonus Payment in Progress.`);
-    } catch (error) {
-      console.error(`Bonus Payment Failed:`, error);
-      showErrorToast(`Bonus Payment Failed: ${error.message}`);
-    }
-    setSelectedEmployee(null);
-    setBonusAmount("");
-    setBonusReason("");
-    setBonusDate("");
-    setHourlyRate("");
-  };
+      const db = getFirestore(app);
+      const businessRef = doc(db, "businesses", account.address);
+      const scheduleDocRef = doc(businessRef, "payroll_schedules", "current");
 
-  const handleOvertimepayment = async (type) => {
-    if (!firebaseUser || !account || !account.address) {
-      showErrorToast("Failed to Authenticate User.");
-      return;
-    }
-    if (!selectedEmployee) {
-      showErrorToast("Please select an employee.");
-      return;
-    }
-    if (
-      type === "overtime" &&
-      (!overtimeHours || !overtimeDate || !hourlyRate)
-    ) {
-      showErrorToast("Please fill in all Overtime details.");
-      return;
-    }
+      // Delete the schedule document
+      await setDoc(
+        scheduleDocRef,
+        {
+          status: "inactive",
+          deletedAt: serverTimestamp(),
+          deletedBy: firebaseUser.uid,
+        },
+        { merge: true }
+      );
 
-    const db = getFirestore(app);
-    try {
-      const newPayment = {
-        date: serverTimestamp(),
-        amount: Overtime_amount,
-        paymentId: paymentId,
-        employeeId: selectedEmployee,
-        status: "Pending",
-        type: type,
-        hourlyRate: parseFloat(hourlyRate),
-        overtimeHours: parseFloat(overtimeHours),
-        overtimeNotes: overtimeNotes,
-      };
-      if (type === "overtime") {
-        newPayment.amount = parseFloat(hourlyRate) * parseFloat(overtimeHours);
-      }
-      const paymentsRef = collection(
-        db,
-        "businesses",
-        account.address,
-        "payments"
-      );
-      const overtimepaymentsRef = collection(
-        db,
-        "businesses",
-        account.address,
-        "BonusPayments"
-      );
-      await addDoc(paymentsRef, newPayment);
-      await addDoc(overtimepaymentsRef, newPayment);
-      showSuccessToast(`Overtime Payment in Progress.`);
+      // Update business settings
+      await updateDoc(businessRef, {
+        "settings.paymentInterval": null,
+        "settings.paymentDay": null,
+        "settings.specificDate": null,
+        "settings.selectedWeeklyDay": null,
+        "settings.nextPaymentDate": null,
+        "settings.lastUpdated": serverTimestamp(),
+      });
+
+      // Reset local state
+      setPaymentInterval("Monthly");
+      setPaymentDay("Last working day");
+      setSpecificDate(1);
+      setSelectedWeeklyDay(WEEKLY_DAYS[0]);
+      setNextPaymentDate(null);
+
+      showSuccessToast("Payroll schedule deleted successfully!");
+      setActiveTab("OVERVIEW");
     } catch (error) {
-      console.error(`Overtime Payment Failed:`, error);
-      showErrorToast(`Overtime Payment Failed: ${error.message}`);
+      console.error("Error deleting payroll schedule:", error);
+      showErrorToast(`Failed to delete payroll schedule: ${error.message}`);
+    } finally {
+      setIsDeletingSchedule(false);
     }
-    setSelectedEmployee(null);
-    setOvertimeHours("");
-    setOvertimeDate("");
-    setOvertimeNotes("");
-    setHourlyRate("");
   };
 
   const FilterDropdown = ({ options, selected, onSelect }) => (
@@ -673,54 +711,74 @@ export default function PayrollPage() {
     </div>
   );
 
-  const EmployeeListItem = ({ employee, isSelected, onSelect }) => (
-    <div
-      key={employee.id}
-      className={`p-3 rounded-lg cursor-pointer transition-colors ${
-        isSelected
-          ? "bg-blue-50 border border-blue-200"
-          : "hover:bg-gray-50 border border-transparent"
-      }`}
-      onClick={() => onSelect(employee.id)}
-    >
-      <div className="flex items-start space-x-3">
-        <div
-          className={`h-8 w-8 rounded-full flex items-center justify-center bg-blue-100 text-blue-600`}
-        >
-          {employee.worker_name
-            .split(" ")
-            .map((n) => n[0])
-            .join("")}
-        </div>
-        <div>
-          <p className="font-medium text-gray-900">{employee.worker_name}</p>
-          <p className="text-sm text-gray-500">
-            {employee.role} • {employee.status}
-          </p>
-          {hourlyRate && (
-            <p className="text-xs text-gray-500 mt-1">
-              {formatCurrency(hourlyRate)}/hr
-            </p>
-          )}
-          <p className="text-xs text-gray-500 mt-1">
-            {formatCurrency(employee.worker_salary)}/mo
-          </p>
-        </div>
-      </div>
-    </div>
-  );
+  const handleViewPayment = (payment) => {
+    setSelectedPayment(payment);
+    setIsModalOpen(true);
+  };
 
-  const Overtime_amount = parseFloat(hourlyRate) * parseFloat(overtimeHours);
+  // Function to close the modal
+  const handleCloseModal = () => {
+    setSelectedPayment(null);
+    setIsModalOpen(false);
+  };
 
-  const resetOvertimeBonusForm = () => {
-    setSelectedEmployee(null);
-    setOvertimeHours("");
-    setOvertimeDate("");
-    setOvertimeNotes("");
-    setBonusAmount("");
-    setBonusReason("");
-    setBonusDate("");
-    setHourlyRate("");
+  const calculateNextPaymentDate = (interval, selectedDay, specificDate) => {
+    const today = new Date();
+    let nextPaymentDate = new Date();
+
+    switch (interval) {
+      case "Weekly":
+        const weekdays = [
+          "Sunday",
+          "Monday",
+          "Tuesday",
+          "Wednesday",
+          "Thursday",
+          "Friday",
+          "Saturday",
+        ];
+        const currentDay = today.getDay();
+        const targetDay = weekdays.indexOf(selectedDay);
+        let daysUntilTarget = targetDay - currentDay;
+
+        if (daysUntilTarget <= 0) {
+          daysUntilTarget += 7;
+        }
+        nextPaymentDate.setDate(today.getDate() + daysUntilTarget);
+        break;
+
+      case "Monthly":
+        nextPaymentDate.setMonth(today.getMonth() + 1);
+
+        if (selectedDay === "Last working day") {
+          nextPaymentDate.setMonth(nextPaymentDate.getMonth() + 1, 0);
+          while (
+            nextPaymentDate.getDay() === 0 ||
+            nextPaymentDate.getDay() === 6
+          ) {
+            nextPaymentDate.setDate(nextPaymentDate.getDate() - 1);
+          }
+        } else {
+          nextPaymentDate.setDate(specificDate);
+          while (
+            nextPaymentDate.getDay() === 0 ||
+            nextPaymentDate.getDay() === 6
+          ) {
+            nextPaymentDate.setDate(nextPaymentDate.getDate() + 1);
+          }
+        }
+        break;
+    }
+
+    while (
+      nextPaymentDate.getDay() === 0 ||
+      nextPaymentDate.getDay() === 6 ||
+      nextPaymentDate < today
+    ) {
+      nextPaymentDate.setDate(nextPaymentDate.getDate() + 1);
+    }
+
+    return nextPaymentDate;
   };
 
   return (
@@ -749,22 +807,20 @@ export default function PayrollPage() {
       {/* Tabs */}
       <div className="border-b mb-6">
         <div className="flex gap-8">
-          {["OVERVIEW", "EDIT PAYROLL SCHEDULE", "OVERTIME & BONUS"].map(
-            (tab) => (
-              <button
-                key={tab}
-                className={`pb-2 transition-colors duration-200 ${
-                  activeTab === tab
-                    ? "text-blue-600 border-b-2 border-blue-600 font-medium"
-                    : "text-gray-500 hover:text-gray-700"
-                }`}
-                onClick={() => setActiveTab(tab)}
-                disabled={isLoadingAccount}
-              >
-                {tab}
-              </button>
-            )
-          )}
+          {["OVERVIEW", "EDIT PAYROLL SCHEDULE"].map((tab) => (
+            <button
+              key={tab}
+              className={`pb-2 transition-colors duration-200 ${
+                activeTab === tab
+                  ? "text-blue-600 border-b-2 border-blue-600 font-medium"
+                  : "text-gray-500 hover:text-gray-700"
+              }`}
+              onClick={() => setActiveTab(tab)}
+              disabled={isLoadingAccount}
+            >
+              {tab}
+            </button>
+          ))}
         </div>
       </div>
 
@@ -785,7 +841,7 @@ export default function PayrollPage() {
               </div>
               <div className="space-y-1">
                 <p className="text-2xl font-semibold">
-                  {nextPaymentDate ? formatDate(nextPaymentDate) : "Loading..."}
+                  {nextPaymentDate ? formatDate(nextPaymentDate) : "Unavailble"}
                 </p>
                 <p className="text-sm text-gray-500">
                   {nextPaymentDate
@@ -913,13 +969,13 @@ export default function PayrollPage() {
                       Date
                     </th>
                     <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                      Amount
+                      Total Amount
+                    </th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                      Recipients
                     </th>
                     <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                       Status
-                    </th>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                      Type
                     </th>
                     <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">
                       Actions
@@ -927,41 +983,50 @@ export default function PayrollPage() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-200">
-                  {filteredPayments.map((payment) => (
-                    <tr key={payment.id} className="hover:bg-gray-50">
+                  {filteredPayments.map((payroll) => (
+                    <tr key={payroll.id} className="hover:bg-gray-50">
                       <td className="px-6 py-4 whitespace-nowrap">
                         <div className="text-sm font-medium text-gray-900">
-                          {payment.date && payment.date.seconds
-                            ? formatDate(new Date(payment.date.seconds * 1000))
-                            : "Invalid Date"}
+                          {payroll.payrollDate
+                            ? new Date(
+                                payroll.payrollDate.seconds * 1000
+                              ).toLocaleDateString("en-US", {
+                                year: "numeric",
+                                month: "long",
+                                day: "numeric",
+                              })
+                            : "N/A"}
                         </div>
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap">
                         <div className="text-sm font-medium text-gray-900">
-                          {formatCurrency(payment.amount)}
+                          {formatCurrency(payroll.totalAmount)}
                         </div>
                       </td>
-
+                      <td className="px-6 py-4 whitespace-nowrap">
+                        <div className="text-sm text-gray-500">
+                          {payroll.recipients?.length || 0} employees
+                        </div>
+                      </td>
                       <td className="px-6 py-4 whitespace-nowrap">
                         <span
                           className={`px-2 inline-flex text-xs leading-5 font-semibold rounded-full ${
-                            payment.status === "Completed"
+                            payroll.payrollStatus === "Success"
                               ? "bg-green-100 text-green-800"
+                              : payroll.payrollStatus === "Failed"
+                              ? "bg-red-100 text-red-800"
                               : "bg-blue-100 text-blue-800"
                           }`}
                         >
-                          {payment.status}
+                          {payroll.payrollStatus}
                         </span>
                       </td>
-                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                        {payment.type}
-                      </td>
                       <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
-                        <button className="text-indigo-600 hover:text-indigo-900 mr-3">
+                        <button
+                          className="text-indigo-600 hover:text-indigo-900 mr-3"
+                          onClick={() => handleViewPayment(payroll)}
+                        >
                           View
-                        </button>
-                        <button className="p-1 rounded-full hover:bg-gray-100">
-                          <MoreVertical size={16} className="text-gray-500" />
                         </button>
                       </td>
                     </tr>
@@ -970,59 +1035,13 @@ export default function PayrollPage() {
               </table>
             ) : (
               <div className="text-center p-8 text-gray-500">
-                No payments history found
+                No payroll history found
               </div>
             )}
           </div>
 
           {/* Pagination */}
-          <div className="flex items-center justify-between border-t border-gray-200 bg-white px-4 py-3 sm:px-6 rounded-lg mt-4">
-            <div className="flex flex-1 justify-between sm:hidden">
-              <button className="relative inline-flex items-center rounded-md border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50">
-                Previous
-              </button>
-              <button className="relative ml-3 inline-flex items-center rounded-md border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50">
-                Next
-              </button>
-            </div>
-            <div className="hidden sm:flex sm:flex-1 sm:items-center sm:justify-between">
-              <div>
-                <p className="text-sm text-gray-700">
-                  Showing <span className="font-medium">1</span> to{" "}
-                  <span className="font-medium">
-                    {Math.min(5, filteredPayments.length)}
-                  </span>{" "}
-                  of{" "}
-                  <span className="font-medium">{filteredPayments.length}</span>{" "}
-                  results
-                </p>
-              </div>
-              <div>
-                <nav
-                  className="isolate inline-flex -space-x-px rounded-md shadow-sm"
-                  aria-label="Pagination"
-                >
-                  <button className="relative inline-flex items-center rounded-l-md px-2 py-2 text-gray-400 ring-1 ring-inset ring-gray-300 hover:bg-gray-50 focus:z-20 focus:outline-offset-0">
-                    <span className="sr-only">Previous</span>
-                    <ChevronRight size={16} className="rotate-180" />
-                  </button>
-                  <button className="relative inline-flex items-center bg-blue-600 px-4 py-2 text-sm font-semibold text-white focus:z-20 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600">
-                    1
-                  </button>
-                  <button className="relative inline-flex items-center px-4 py-2 text-sm font-semibold text-gray-900 ring-1 ring-inset ring-gray-300 hover:bg-gray-50 focus:z-20 focus:outline-offset-0">
-                    2
-                  </button>
-                  <button className="relative inline-flex items-center px-4 py-2 text-sm font-semibold text-gray-900 ring-1 ring-inset ring-gray-300 hover:bg-gray-50 focus:z-20 focus:outline-offset-0">
-                    3
-                  </button>
-                  <button className="relative inline-flex items-center rounded-r-md px-2 py-2 text-gray-400 ring-1 ring-inset ring-gray-300 hover:bg-gray-50 focus:z-20 focus:outline-offset-0">
-                    <span className="sr-only">Next</span>
-                    <ChevronRight size={16} />
-                  </button>
-                </nav>
-              </div>
-            </div>
-          </div>
+          <PaginationSection />
         </div>
       )}
 
@@ -1150,6 +1169,13 @@ export default function PayrollPage() {
               {/* Action Buttons */}
               <div className="flex justify-end space-x-4 pt-4 border-t">
                 <button
+                  className="px-4 py-2 border border-red-300 text-red-600 rounded-md text-sm font-medium hover:bg-red-50"
+                  onClick={handleDeleteSchedule}
+                  disabled={isDeletingSchedule}
+                >
+                  {isDeletingSchedule ? "Deleting..." : "Delete Schedule"}
+                </button>
+                <button
                   className={`px-4 py-2 ${
                     isUpdating
                       ? "bg-gray-400 cursor-not-allowed"
@@ -1166,199 +1192,68 @@ export default function PayrollPage() {
         </div>
       )}
 
-      {/* --- OVERTIME & BONUS TAB CONTENT --- */}
-      {activeTab === "OVERTIME & BONUS" && (
-        <div className="grid grid-cols-3 gap-6">
-          {/* Left column - Employee selection */}
-          <div className="col-span-1 bg-white rounded-lg p-6 shadow-sm border border-gray-100 h-fit">
-            <h2 className="text-lg font-semibold mb-4">Select Employee</h2>
-            <div className="relative mb-4">
-              <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                <Search size={16} className="text-gray-400" />
-              </div>
-              <input
-                type="text"
-                className="pl-10 pr-4 py-2 border border-gray-200 rounded-lg w-full focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                placeholder="Search employees..."
-                value={employeeSearch}
-                onChange={(e) => setEmployeeSearch(e.target.value)}
-              />
+      {/* Payment Details Modal */}
+      {isModalOpen && selectedPayment && (
+        <div className="fixed inset-0 bg-gray-600 bg-opacity-50 overflow-y-auto h-full w-full flex justify-center items-center">
+          <div className="relative bg-white p-8 rounded-lg shadow-lg max-w-md w-full">
+            <div className="absolute top-2 right-2">
+              <button
+                onClick={handleCloseModal}
+                className="text-gray-500 hover:text-gray-700"
+              >
+                <X size={20} />
+              </button>
             </div>
-            <div className="space-y-2 max-h-96 overflow-y-auto">
-              {filteredEmployees.length > 0 ? (
-                filteredEmployees.map((employee) => (
-                  <EmployeeListItem
-                    key={employee.id}
-                    employee={employee}
-                    isSelected={selectedEmployee === employee.id}
-                    onSelect={setSelectedEmployee}
-                  />
-                ))
-              ) : (
-                <div className="text-sm text-gray-500">No employees found.</div>
-              )}
-            </div>
-          </div>
-
-          {/* Right column - Overtime & Bonus form */}
-          <div className="col-span-2 space-y-6">
-            {/* Overtime section */}
-            <div className="bg-white rounded-lg p-6 shadow-sm border border-gray-100">
-              <div className="flex items-center justify-between mb-4">
-                <h2 className="text-lg font-semibold">Overtime Payment</h2>
-                <div className="text-xs text-gray-500 flex items-center gap-1">
-                  <Clock size={14} /> Total Overtime Payment = $
-                  {Overtime_amount}
-                </div>
+            <h2 className="text-xl font-semibold mb-4">Payroll Details</h2>
+            <div className="space-y-2">
+              <div>
+                <span className="font-medium">Payroll ID:</span>{" "}
+                {selectedPayment.payrollId || "N/A"}
               </div>
-
-              <div className="space-y-4">
-                <div className="grid grid-cols-2 gap-4">
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">
-                      Overtime Hours Worked
-                    </label>
-                    <div className="mt-1 relative rounded-md shadow-sm">
-                      <input
-                        type="number"
-                        className="mt-1 block w-full pl-7 pr-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
-                        value={overtimeHours}
-                        placeholder="0.00"
-                        onChange={(e) => setOvertimeHours(e.target.value)}
-                        disabled={!selectedEmployee}
-                      />
-                      <div className="absolute inset-y-0 right-0 pr-3 flex items-center pointer-events-none">
-                        <span className="text-gray-500 sm:text-sm">hours</span>
+              <div>
+                <span className="font-medium">Date:</span>{" "}
+                {selectedPayment.payrollDate
+                  ? new Date(
+                      selectedPayment.payrollDate.seconds * 1000
+                    ).toLocaleDateString("en-US", {
+                      year: "numeric",
+                      month: "long",
+                      day: "numeric",
+                    })
+                  : "N/A"}
+              </div>
+              <div>
+                <span className="font-medium">Total Amount:</span>{" "}
+                {formatCurrency(selectedPayment.totalAmount)}
+              </div>
+              <div>
+                <span className="font-medium">Status:</span>{" "}
+                {selectedPayment.payrollStatus}
+              </div>
+              <div>
+                <span className="font-medium">Token:</span>{" "}
+                {selectedPayment.payrollToken}
+              </div>
+              <div>
+                <span className="font-medium">Transaction Hash:</span>{" "}
+                <span className="text-sm text-gray-500 break-all">
+                  {selectedPayment.transactionHash}
+                </span>
+              </div>
+              <div>
+                <span className="font-medium">Recipients:</span>
+                <div className="mt-2 max-h-40 overflow-y-auto">
+                  {selectedPayment.recipients?.map((recipient, index) => (
+                    <div
+                      key={index}
+                      className="text-sm border-b border-gray-100 py-2"
+                    >
+                      <div>{recipient.recipientName}</div>
+                      <div className="text-gray-500 text-xs">
+                        {formatCurrency(recipient.amount)}
                       </div>
                     </div>
-                  </div>
-
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">
-                      Date
-                    </label>
-                    <input
-                      type="date"
-                      className="mt-1 block w-full pl-7 pr-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
-                      value={overtimeDate}
-                      onChange={(e) => setOvertimeDate(e.target.value)}
-                      disabled={!selectedEmployee}
-                    />
-                  </div>
-                </div>
-
-                {/* Hourly rate of the worker input */}
-
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">
-                    Hourly Rate
-                  </label>
-                  <div className="mt-1 relative rounded-md shadow-sm">
-                    <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                      <span className="text-gray-500 sm:text-sm">$</span>
-                    </div>
-                    <input
-                      type="number"
-                      className="mt-1 block w-full pl-7 pr-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
-                      placeholder="0.00"
-                      value={hourlyRate}
-                      onChange={(e) => setHourlyRate(e.target.value)}
-                      disabled={!selectedEmployee}
-                    />
-                  </div>
-                </div>
-
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">
-                    Notes
-                  </label>
-                  <textarea
-                    rows={2}
-                    className="mt-1 block w-full pl-7 pr-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
-                    placeholder="Add any additional information about this overtime"
-                    value={overtimeNotes}
-                    onChange={(e) => setOvertimeNotes(e.target.value)}
-                    disabled={!selectedEmployee}
-                  />
-                </div>
-                <div className="flex justify-end space-x-4 pt-4">
-                  <button
-                    className="px-4 py-2 bg-blue-600 rounded-md text-sm font-medium text-white hover:bg-blue-700"
-                    onClick={() => handleOvertimepayment("overtime")}
-                    disabled={!selectedEmployee}
-                  >
-                    Make Payment
-                  </button>
-                </div>
-              </div>
-            </div>
-
-            {/* Bonus section */}
-            <div className="bg-white rounded-lg p-6 shadow-sm border border-gray-100">
-              <h2 className="text-lg font-semibold mb-4">Bonus Payment</h2>
-
-              <div className="space-y-4">
-                <div className="grid grid-cols-2 gap-4">
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">
-                      Amount
-                    </label>
-                    <div className="mt-1 relative rounded-md shadow-sm">
-                      <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                        <span className="text-gray-500 sm:text-sm">$</span>
-                      </div>
-                      <input
-                        type="number"
-                        className="mt-1 block w-full pl-7 pr-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
-                        placeholder="0.00"
-                        value={bonusAmount}
-                        onChange={(e) => setBonusAmount(e.target.value)}
-                        disabled={!selectedEmployee}
-                      />
-                    </div>
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">
-                      Date
-                    </label>
-                    <input
-                      type="date"
-                      className="mt-1 block w-full pl-7 pr-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
-                      value={bonusDate}
-                      onChange={(e) => setBonusDate(e.target.value)}
-                      disabled={!selectedEmployee}
-                    />
-                  </div>
-                </div>
-
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">
-                    Reason
-                  </label>
-                  <textarea
-                    rows={2}
-                    className="mt-1 block w-full pl-7 pr-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
-                    placeholder="Explain the reason for this bonus payment"
-                    value={bonusReason}
-                    onChange={(e) => setBonusReason(e.target.value)}
-                    disabled={!selectedEmployee}
-                  />
-                </div>
-                <div className="flex justify-end space-x-4 pt-4">
-                  <button
-                    className="px-4 py-2 border border-gray-300 rounded-md text-sm font-medium text-gray-700 hover:bg-gray-50"
-                    onClick={resetOvertimeBonusForm}
-                    disabled={!selectedEmployee}
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    className="px-4 py-2 bg-blue-600 rounded-md text-sm font-medium text-white hover:bg-blue-700"
-                    onClick={() => handleBonuspayment("bonus")}
-                    disabled={!selectedEmployee}
-                  >
-                    Give Bonus
-                  </button>
+                  ))}
                 </div>
               </div>
             </div>

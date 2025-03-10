@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { db, collection, addDoc } from "../config/firebaseconfig";
+import { db, collection, addDoc } from "@/app/config/FirebaseConfig";
 import { toast } from "react-toastify";
 import "react-toastify/dist/ReactToastify.css";
 

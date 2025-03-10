@@ -10,7 +10,7 @@ import {
   HelpCircle,
 } from "lucide-react";
 import Link from "next/link";
-import Header from "../components/Header";
+import Header from "@/app/components/header";
 
 const PricingPage = () => {
   const [isAnnual, setIsAnnual] = useState(true);

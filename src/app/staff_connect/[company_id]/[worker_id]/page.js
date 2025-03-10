@@ -124,6 +124,7 @@ export default function WorkerConnectPage() {
 
       showToast("Wallet address saved successfully!", "success");
       setShowSuccessModal(true);
+      router.push(`/`);
     } catch (error) {
       console.error("Error saving wallet address:", error);
       showToast(`Error saving wallet address: ${error.message}`);
@@ -262,7 +263,7 @@ export default function WorkerConnectPage() {
 
                 <div className="absolute top-24 left-64 transform rotate-[15deg] w-[300px]">
                   <Image
-                    src="/Phantom.png"
+                    src="/phantom.png"
                     alt="Phantom Transaction Card"
                     width={300}
                     height={180}
@@ -272,7 +273,7 @@ export default function WorkerConnectPage() {
 
                 <div className="absolute -top-20 right-0 animate-[flight_3s_ease-in-out_infinite]">
                   <Image
-                    src="/paper plane.png"
+                    src="/pplane.png"
                     alt="Paper Plane"
                     width={120}
                     height={120}

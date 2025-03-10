@@ -13,12 +13,15 @@ import {
   setDoc,
   doc,
   getDoc,
+  addDoc,
+  collection,
 } from "@/app/config/FirebaseConfig";
 import { ConnectButton, useActiveAccount } from "thirdweb/react";
 import { lightTheme } from "thirdweb/react";
 import { inAppWallet, createWallet } from "thirdweb/wallets";
 import { createThirdwebClient } from "thirdweb";
 import { useParams } from "next/navigation";
+import { motion } from "framer-motion";
 
 const client = createThirdwebClient({
   clientId: process.env.NEXT_PUBLIC_THIRDWEB_CLIENT_ID,
@@ -47,6 +50,10 @@ export default function ContractorConnectPage() {
   const [isLoading, setIsLoading] = useState(false);
   const [isMobile, setIsMobile] = useState(false);
   const account = useActiveAccount();
+  const [hasConnectedBefore, setHasConnectedBefore] = useState(false);
+  const [contractorData, setContractorData] = useState(null);
+  const [isValidContractor, setIsValidContractor] = useState(false);
+  const [isPageLoading, setIsPageLoading] = useState(true);
 
   // Handle responsive layout
   useEffect(() => {
@@ -73,6 +80,60 @@ export default function ContractorConnectPage() {
     }
   }, [account]);
 
+  useEffect(() => {
+    // Validate contractor and company IDs
+    const validateContractor = async () => {
+      setIsPageLoading(true);
+
+      try {
+        if (!company_id || !contractor_id) {
+          showToast("Invalid company ID or contractor ID.");
+          router.push("/");
+          return;
+        }
+
+        // Fetch contractor data from Firestore
+        const db = getFirestore(app);
+        const contractorRef = doc(
+          db,
+          "Contractors",
+          company_id,
+          "contractor",
+          contractor_id
+        );
+        const contractorSnap = await getDoc(contractorRef);
+
+        if (!contractorSnap.exists()) {
+          setIsValidContractor(true);
+          console.log("Contractor not found. free to connect wallet");
+          return;
+        }
+
+        // Set contractor data and mark as valid
+        const contractorData = contractorSnap.data();
+        setContractorData(contractorData);
+        setIsValidContractor(true);
+
+        // Check if wallet is already connected
+        if (contractorData.contractor_wallet) {
+          setHasConnectedBefore(true);
+          showToast(
+            "You have already connected your wallet. Please contact support if you need to change it.",
+            "info"
+          );
+        }
+      } catch (error) {
+        console.error("Error validating contractor:", error);
+        showToast("Error validating contractor information.");
+        router.push("/");
+      } finally {
+        setIsPageLoading(false);
+      }
+    };
+
+    validateContractor();
+  }, [company_id, contractor_id, router]);
+
   const showToast = (message, type = "error") => {
     toast[type](message, {
       position: "top-right",
@@ -90,6 +151,13 @@ export default function ContractorConnectPage() {
       showToast("Please connect your wallet.");
       return;
     }
+    if (hasConnectedBefore) {
+      showToast(
+        "You have already connected your wallet. Please contact support if you need to change it.",
+        "info"
+      );
+      return;
+    }
     setShowConfirmModal(true);
   };
 
@@ -98,6 +166,11 @@ export default function ContractorConnectPage() {
     setIsLoading(true);
 
     try {
+      if (!isValidContractor) {
+        showToast("Invalid contractor information.");
+        return;
+      }
+
       if (!company_id || !contractor_id) {
         showToast("Invalid company ID or contractor ID.");
         return;
@@ -108,28 +181,48 @@ export default function ContractorConnectPage() {
         return;
       }
 
+      // Validate wallet address format
+      if (!/^0x[a-fA-F0-9]{40}$/.test(account.address)) {
+        showToast("Invalid wallet address format.");
+        return;
+      }
+
       const db = getFirestore(app);
       const contractorRef = doc(
         db,
-        "Workers",
+        "Contractors",
         company_id,
-        "workers",
+        "contractor",
         contractor_id
       );
-      const contractorSnap = await getDoc(contractorRef);
 
+      // Add a transaction timestamp for audit trail
       await setDoc(
         contractorRef,
         {
           contractor_wallet: account.address,
           status: "active",
           company_id: company_id,
+          wallet_connected_at: new Date().toISOString(),
+          wallet_connected_ip: await fetchClientIP(),
         },
         { merge: true }
       );
 
+      // Log the wallet connection for audit purposes
+      await addDoc(collection(db, "WalletConnectionLogs"), {
+        contractor_id: contractor_id,
+        company_id: company_id,
+        wallet_address: account.address,
+        timestamp: new Date().toISOString(),
+        action: "connect_wallet",
+      });
+
       showToast("Wallet address saved successfully!", "success");
       setShowSuccessModal(true);
+      setTimeout(() => {
+        router.push("/");
+      }, 3000);
     } catch (error) {
       console.error("Error saving wallet address:", error);
       showToast(`Error saving wallet address: ${error.message}`);
@@ -138,16 +231,82 @@ export default function ContractorConnectPage() {
     }
   };
 
+  // Fetch client IP for audit logging (using a public API)
+  const fetchClientIP = async () => {
+    try {
+      const response = await fetch("https://api.ipify.org?format=json");
+      const data = await response.json();
+      return data.ip;
+    } catch (error) {
+      console.error("Error fetching IP:", error);
+      return "unknown";
+    }
+  };
+
+  const fadeInAnimation = {
+    initial: { opacity: 0 },
+    animate: { opacity: 1, transition: { duration: 0.5 } },
+    exit: { opacity: 0, transition: { duration: 0.3 } },
+  };
+
+  // Show loading state while validating contractor
+  if (isPageLoading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-white to-blue-50">
+        <div className="text-center">
+          <Loader2 className="animate-spin h-10 w-10 mx-auto mb-4 text-[#0051FF]" />
+          <p className="text-gray-600">Validating contractor information...</p>
+        </div>
+      </div>
+    );
+  }
+
+  // Show error if not a valid contractor
+  if (!isValidContractor && !isPageLoading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-white to-blue-50">
+        <div className="text-center max-w-md p-8">
+          <div className="w-20 h-20 bg-red-500 rounded-full flex items-center justify-center mx-auto mb-6">
+            <svg
+              className="w-10 h-10 text-white"
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={2}
+                d="M6 18L18 6M6 6l12 12"
+              />
+            </svg>
+          </div>
+          <h3 className="text-2xl font-medium mb-4">Invalid Contractor</h3>
+          <p className="text-gray-600 mb-6">
+            This contractor link is invalid or has expired.
+          </p>
+          <button
+            onClick={() => router.push("/")}
+            className="px-6 py-3 bg-[#0051FF] text-white rounded-xl"
+          >
+            Return Home
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <>
       <div className="min-h-screen flex flex-col md:flex-row bg-gradient-to-br from-white to-blue-50">
         <ToastContainer />
 
         {/* Left Section */}
-        <div
+        <motion.div
           className={`${
             isMobile ? "w-full p-6" : "w-1/2 p-12"
           } flex flex-col justify-center`}
+          {...fadeInAnimation}
         >
           <div className="max-w-md mx-auto w-full">
             <h1
@@ -209,11 +368,13 @@ export default function ContractorConnectPage() {
             {/* Submit Button */}
             <button
               onClick={handleSubmit}
-              disabled={isLoading || !account}
+              disabled={isLoading || !account || hasConnectedBefore}
               className={`w-full bg-[#0051FF] text-white py-4 rounded-xl mb-4 hover:bg-blue-600 ${
                 isMobile ? "text-base" : "text-lg"
               } font-medium ${
-                isLoading || !account ? "opacity-50 cursor-not-allowed" : ""
+                isLoading || !account || hasConnectedBefore
+                  ? "opacity-50 cursor-not-allowed"
+                  : ""
               }`}
             >
               {isLoading ? (
@@ -241,11 +402,14 @@ export default function ContractorConnectPage() {
               .
             </p>
           </div>
-        </div>
+        </motion.div>
 
         {/* Right Section - Hidden on Mobile */}
         {!isMobile && (
-          <div className="w-1/2 bg-[#0051FF] p-16 flex flex-col justify-center">
+          <motion.div
+            className="w-1/2 bg-[#0051FF] p-16 flex flex-col justify-center"
+            {...fadeInAnimation}
+          >
             <div className="text-white max-w-xl">
               <h2 className="text-5xl font-bold mb-6">
                 No limits, no borders, no wahala.
@@ -266,9 +430,9 @@ export default function ContractorConnectPage() {
                   />
                 </div>
 
-                <div className="absolute top-24 left-64 transform rotate-[15deg] w-[300px]">
+                <div className="absolute top-2 left-80 transform rotate-[15deg] w-[300px]">
                   <Image
-                    src="/Phantom.png"
+                    src="/phantom.png"
                     alt="Phantom Transaction Card"
                     width={300}
                     height={180}
@@ -278,7 +442,7 @@ export default function ContractorConnectPage() {
 
                 <div className="absolute -top-20 right-0 animate-[flight_3s_ease-in-out_infinite]">
                   <Image
-                    src="/paper plane.png"
+                    src="/pplane.png"
                     alt="Paper Plane"
                     width={120}
                     height={120}
@@ -287,7 +451,7 @@ export default function ContractorConnectPage() {
                 </div>
               </div>
             </div>
-          </div>
+          </motion.div>
         )}
       </div>
 

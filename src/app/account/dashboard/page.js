@@ -14,7 +14,7 @@ import {
   X,
   TrendingUp,
   TrendingDown,
-  CircleDollarSign,
+  CircleDollarSign, // New icon for payroll balance stat
 } from "lucide-react";
 import { useActiveAccount } from "thirdweb/react";
 import {
@@ -34,8 +34,7 @@ const formatCurrency = (amount) => {
   const numericAmount =
     typeof amount === "number"
       ? amount
-      : parseFloat(String(amount).replace(/[^0-9.-]+/g, "")); // Handle undefined and non-string
-
+      : parseFloat(String(amount).replace(/[^0-9.-]+/g, ""));
   if (isNaN(numericAmount)) {
     return "Invalid Amount";
   }
@@ -45,40 +44,60 @@ const formatCurrency = (amount) => {
   }).format(numericAmount);
 };
 
-// Accepts a Firestore Timestamp and returns formatted date string
 const formatDate = (timestamp) => {
-  if (!timestamp) return "N/A"; // Most robust handling of missing date
+  if (!timestamp) return "N/A";
   try {
+    // Handle both Firestore Timestamp and seconds
+    const date = timestamp.toDate
+      ? timestamp.toDate()
+      : new Date(timestamp.seconds * 1000);
+
     return new Intl.DateTimeFormat("en-US", {
       year: "numeric",
       month: "short",
       day: "numeric",
-    }).format(new Date(timestamp.seconds * 1000));
+    }).format(date);
   } catch (error) {
-    console.error("Error formatting date:", error); // Log the error for debugging
+    console.error("Error formatting date:", error);
     return "Invalid Date";
   }
 };
 
-// --- Main Component ---
+const calculateMonthlyPayments = (transactions) => {
+  const now = new Date();
+  const firstDayOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+
+  return transactions.reduce((total, transaction) => {
+    const txDate =
+      transaction.timestamp?.toDate?.() ||
+      new Date(transaction.timestamp?.seconds * 1000);
+
+    if (txDate >= firstDayOfMonth && transaction.status === "Success") {
+      return total + (Number(transaction.amount) || 0);
+    }
+    return total;
+  }, 0);
+};
 
 export default function Dashboard() {
   const [searchQuery, setSearchQuery] = useState("");
+  const [isAuthReady, setIsAuthReady] = useState(false);
   const [selectedTransaction, setSelectedTransaction] = useState(null);
-  const [timeRange, setTimeRange] = useState("All time"); // Time range filter
+  const [timeRange, setTimeRange] = useState("All time");
   const [filteredTransactions, setFilteredTransactions] = useState([]);
-  const [transactions, setTransactions] = useState([]); // Holds fetched transactions
-  const [isLoading, setIsLoading] = useState(true); // Loading state
+  const [transactions, setTransactions] = useState([]);
+  const [isLoading, setIsLoading] = useState(true);
   const [stats, setStats] = useState({
     workersInPayroll: 0,
-    workersPercentageChange: 0, //  calculate this based on previous data
-    nextPaymentDate: null, // Will be a Date object or null
+    workersPercentageChange: 0,
+    nextPaymentDate: null,
     totalPaymentsThisMonth: 0,
-    paymentsPercentageChange: 0, // Calculate based on previous data
+    paymentsPercentageChange: 0,
+    payrollBalance: 0, // New stat: total payroll balance from workers with a wallet
   });
 
   const [nextPaymentDateDisplay, setNextPaymentDateDisplay] =
-    useState("Loading..."); // Separate display state.
+    useState("Loading...");
   const [daysFromNow, setDaysFromNow] = useState("");
 
   const account = useActiveAccount();
@@ -110,15 +129,34 @@ export default function Dashboard() {
   };
 
   useEffect(() => {
-    const unsubscribe = auth.onAuthStateChanged(async (user) => {
-      setFirebaseUser(user);
-      if (!user) {
-        router.push("/auth/login");
-      }
-    });
-    return () => unsubscribe();
-  }, [router]);
+    let authUnsubscribe;
 
+    const initializeAuth = async () => {
+      authUnsubscribe = auth.onAuthStateChanged(async (user) => {
+        setFirebaseUser(user);
+        setIsAuthReady(true);
+
+        if (user) {
+          if (!account || !account.address) {
+            console.log("Please connect your wallet to view worker data.");
+            showErrorToast("Please connect your wallet to view worker data.");
+            setIsLoading(false);
+            return;
+          }
+        } else {
+          router.push("/auth/login");
+        }
+      });
+    };
+
+    initializeAuth();
+
+    return () => {
+      if (authUnsubscribe) authUnsubscribe();
+    };
+  }, [account, router]);
+
+  // Fetch transactions and business settings
   useEffect(() => {
     let unsubscribeTransactions;
 
@@ -155,36 +193,11 @@ export default function Dashboard() {
                 }));
                 setTransactions(transactionsData);
 
-                // Calculate total payments this month (Efficiently!)
-                const now = new Date();
-                const currentMonth = now.getMonth();
-                const currentYear = now.getFullYear();
-                // Use reduce for efficient calculation, handles missing amount
-                const totalThisMonth = transactionsData.reduce(
-                  (acc, transaction) => {
-                    if (
-                      transaction.date &&
-                      transaction.date.seconds &&
-                      transaction.status === "Completed"
-                    ) {
-                      const transactionDate = new Date(
-                        transaction.date.seconds * 1000
-                      );
-                      if (
-                        transactionDate.getMonth() === currentMonth &&
-                        transactionDate.getFullYear() === currentYear
-                      ) {
-                        return acc + (transaction.amount || 0); // Handles missing amount
-                      }
-                    }
-                    return acc;
-                  },
-                  0
-                );
-
+                // Calculate total payments this month
+                const monthlyTotal = calculateMonthlyPayments(transactionsData);
                 setStats((prevStats) => ({
                   ...prevStats,
-                  totalPaymentsThisMonth: totalThisMonth,
+                  totalPaymentsThisMonth: monthlyTotal,
                 }));
 
                 setIsLoading(false);
@@ -195,24 +208,22 @@ export default function Dashboard() {
                 setIsLoading(false);
               }
             );
-            // Fetch business data for stats (workers, next payment date)
+
+            // Fetch business data for other stats (workers in payroll, next payment date)
             const businessRef = doc(db, "businesses", account.address);
             getDoc(businessRef)
               .then((businessSnap) => {
-                //get the docs
                 if (businessSnap.exists()) {
                   const data = businessSnap.data();
 
-                  // Next Payment Date: Get and format immediately
                   let nextPaymentDate = null;
                   if (data.settings?.nextPaymentDate?.seconds) {
-                    // Check for .seconds
                     nextPaymentDate = new Date(
                       data.settings.nextPaymentDate.seconds * 1000
                     );
                     setNextPaymentDateDisplay(
                       formatDate(data.settings.nextPaymentDate)
-                    ); // Directly use formatDate
+                    );
 
                     const today = new Date();
                     const diffTime =
@@ -231,9 +242,7 @@ export default function Dashboard() {
                   setStats((prevStats) => ({
                     ...prevStats,
                     workersInPayroll: data.totalPayroll || 0,
-                    nextPaymentDate: nextPaymentDate, // Store the Date object
-                    //totalPaymentsThisMonth: 0, // Now calculated above
-                    //paymentsPercentageChange: calculatePaymentsPercentageChange(data.payments), // Implement this
+                    nextPaymentDate: nextPaymentDate,
                   }));
                 }
               })
@@ -254,7 +263,7 @@ export default function Dashboard() {
     } else {
       setTransactions([]);
       setIsLoading(false);
-      setNextPaymentDateDisplay("Loading..."); // Or "N/A", as appropriate
+      setNextPaymentDateDisplay("Loading...");
       setDaysFromNow("");
     }
 
@@ -263,13 +272,53 @@ export default function Dashboard() {
     };
   }, [firebaseUser, account, router]);
 
+  // New useEffect: Listen to the workers collection and sum payroll balance
   useEffect(() => {
-    // Apply time range filter
+    let unsubscribeWorkers;
+    if (firebaseUser && account && account.address) {
+      const db = getFirestore(app);
+      const workersRef = collection(
+        db,
+        "businesses",
+        account.address,
+        "workers"
+      );
+      unsubscribeWorkers = onSnapshot(
+        workersRef,
+        (snapshot) => {
+          const workersData = snapshot.docs.map((doc) => ({
+            id: doc.id,
+            ...doc.data(),
+          }));
+          // Sum up salaries only for workers with a wallet address
+          const totalPayrollBalance = workersData.reduce((acc, worker) => {
+            if (worker.worker_wallet) {
+              return acc + (worker.worker_salary || 0);
+            }
+            return acc;
+          }, 0);
+          setStats((prevStats) => ({
+            ...prevStats,
+            payrollBalance: totalPayrollBalance,
+          }));
+        },
+        (error) => {
+          console.error("Error fetching workers:", error);
+          showErrorToast("Error fetching workers for payroll balance");
+        }
+      );
+    }
+    return () => {
+      if (unsubscribeWorkers) unsubscribeWorkers();
+    };
+  }, [firebaseUser, account]);
+
+  // Filter transactions based on search query and time range
+  useEffect(() => {
     let filtered = [...transactions];
     const today = new Date();
 
     if (timeRange !== "All time") {
-      // Simplify the time range logic
       const rangeDays = {
         "Last 7 days": 7,
         "Last 30 days": 30,
@@ -279,7 +328,7 @@ export default function Dashboard() {
       filtered = transactions.filter((transaction) => {
         const transactionDate = transaction.date
           ? new Date(transaction.date.seconds * 1000)
-          : null; //handle correctly
+          : null;
         if (!transactionDate) return false;
         const diffTime = Math.abs(today - transactionDate);
         const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
@@ -287,7 +336,6 @@ export default function Dashboard() {
       });
     }
 
-    // Apply search query filter
     const lowerSearch = searchQuery.toLowerCase();
     filtered = filtered.filter(
       (transaction) =>
@@ -304,13 +352,11 @@ export default function Dashboard() {
             .toLowerCase()
             .includes(lowerSearch)) ||
         (transaction.date &&
-          formatDate(transaction.date).toLowerCase().includes(lowerSearch)) // Check if transaction.date exists
+          formatDate(transaction.date).toLowerCase().includes(lowerSearch))
     );
 
     setFilteredTransactions(filtered);
   }, [searchQuery, timeRange, transactions]);
-
-  // --- Handlers ---
 
   const handleShowMore = (transaction) => {
     setSelectedTransaction(transaction);
@@ -326,7 +372,7 @@ export default function Dashboard() {
     percentageChange,
     icon: Icon,
     isPositiveChange,
-    dateString, // Use a string for the displayed date
+    dateString,
   }) => {
     return (
       <div className="bg-white rounded-2xl p-6 shadow-md hover:shadow-lg transition-shadow duration-200">
@@ -375,7 +421,32 @@ export default function Dashboard() {
     </select>
   );
 
-  // Main Return
+  const TransactionDateCell = ({ timestamp }) => {
+    if (!timestamp) return <div>No Date</div>;
+
+    const date = timestamp.toDate
+      ? timestamp.toDate()
+      : new Date(timestamp.seconds * 1000);
+
+    return (
+      <div>
+        <div className="font-medium">
+          {date.toLocaleDateString("en-US", {
+            year: "numeric",
+            month: "long",
+            day: "numeric",
+          })}
+        </div>
+        <div className="text-xs text-gray-400">
+          {date.toLocaleTimeString("en-US", {
+            hour: "2-digit",
+            minute: "2-digit",
+          })}
+        </div>
+      </div>
+    );
+  };
+
   return (
     <div className="min-h-screen bg-white py-6">
       <div className="container mx-auto px-4 sm:px-6 lg:px-8">
@@ -405,7 +476,7 @@ export default function Dashboard() {
         </div>
 
         {/* Stats Cards */}
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 mb-8">
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
           <StatCard
             title="Workers in Payroll"
             value={stats.workersInPayroll}
@@ -425,6 +496,12 @@ export default function Dashboard() {
             icon={DollarSign}
             isPositiveChange={false}
           />
+          {/* New Stat Card: Total Payroll Balance */}
+          <StatCard
+            title="Total Payroll Paid"
+            value={formatCurrency(stats.payrollBalance)}
+            icon={CircleDollarSign}
+          />
         </div>
 
         {/* Recent Transactions */}
@@ -443,95 +520,107 @@ export default function Dashboard() {
               <table className="min-w-full divide-y divide-gray-200">
                 <thead className="bg-gray-50">
                   <tr>
-                    <th
-                      scope="col"
-                      className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider"
-                    >
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                       Date
                     </th>
-                    <th
-                      scope="col"
-                      className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider"
-                    >
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                       Transaction ID
                     </th>
-                    <th
-                      scope="col"
-                      className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider"
-                    >
-                      {" "}
-                      Worker Name/ID
-                    </th>
-                    <th
-                      scope="col"
-                      className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider"
-                    >
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                       Amount (USDC)
                     </th>
-                    <th
-                      scope="col"
-                      className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider"
-                    >
-                      Type
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                      Category
                     </th>
-                    <th
-                      scope="col"
-                      className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider"
-                    >
-                      {" "}
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                       Status
                     </th>
-                    <th scope="col" className="relative px-6 py-3">
-                      <span className="sr-only">Show more</span>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                      Actions
                     </th>
                   </tr>
                 </thead>
                 <tbody className="bg-white divide-y divide-gray-200">
-                  {filteredTransactions.map((transaction) => (
-                    <tr key={transaction.id} className="hover:bg-gray-50">
-                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                        {transaction.date
-                          ? formatDate(transaction.date)
-                          : "No Date"}
-                      </td>
-                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                        {transaction.transactionId || "N/A"}
-                      </td>
-                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                        {transaction.workerName || "N/A"}{" "}
-                        {transaction.workerId
-                          ? `(${transaction.workerId})`
-                          : ""}
-                      </td>
-                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                        {transaction.amount
-                          ? formatCurrency(transaction.amount)
-                          : "N/A"}
-                      </td>
-                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                        {transaction.type}
-                      </td>
-                      <td className="px-6 py-4 whitespace-nowrap">
-                        {transaction.status === "Completed" ? (
-                          <span className="px-2 inline-flex text-xs leading-5 font-semibold rounded-full bg-green-100 text-green-800">
-                            Completed
+                  {filteredTransactions
+                    .sort((a, b) => {
+                      // Sort by timestamp in descending order (newest first)
+                      const dateA =
+                        a.timestamp?.seconds ||
+                        a.timestamp?.toDate?.().getTime() ||
+                        0;
+                      const dateB =
+                        b.timestamp?.seconds ||
+                        b.timestamp?.toDate?.().getTime() ||
+                        0;
+                      return dateB - dateA;
+                    })
+                    .map((transaction) => (
+                      <tr key={transaction.id} className="hover:bg-gray-50">
+                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                          <TransactionDateCell
+                            timestamp={transaction.timestamp}
+                          />
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                          <div className="font-medium">
+                            {transaction.transactionid || "N/A"}
+                          </div>
+                          <div className="text-xs text-gray-400 truncate max-w-xs">
+                            {transaction.transactionHash ? (
+                              <span title={transaction.transactionHash}>
+                                {`${transaction.transactionHash.substring(
+                                  0,
+                                  6
+                                )}...${transaction.transactionHash.substring(
+                                  transaction.transactionHash.length - 4
+                                )}`}
+                              </span>
+                            ) : (
+                              "No Hash"
+                            )}
+                          </div>
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 font-medium">
+                          {formatCurrency(transaction.amount)}
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap">
+                          <span
+                            className={`px-2 py-1 inline-flex text-xs leading-5 font-semibold rounded-full 
+                            ${
+                              transaction.category === "Payroll"
+                                ? "bg-blue-100 text-blue-800"
+                                : transaction.category === "Bonus"
+                                ? "bg-green-100 text-green-800"
+                                : "bg-purple-100 text-purple-800"
+                            }`}
+                          >
+                            {transaction.category}
                           </span>
-                        ) : (
-                          <span className="px-2 inline-flex text-xs leading-5 font-semibold rounded-full bg-yellow-100 text-yellow-800">
-                            Pending
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap">
+                          <span
+                            className={`px-2 py-1 inline-flex text-xs leading-5 font-semibold rounded-full
+                            ${
+                              transaction.status === "Success"
+                                ? "bg-green-100 text-green-800"
+                                : transaction.status === "Failed"
+                                ? "bg-red-100 text-red-800"
+                                : "bg-yellow-100 text-yellow-800"
+                            }`}
+                          >
+                            {transaction.status}
                           </span>
-                        )}
-                      </td>
-                      <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
-                        <button
-                          onClick={() => handleShowMore(transaction)}
-                          className="text-blue-600 hover:text-blue-900 focus:outline-none transition-colors duration-200"
-                        >
-                          Show more
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                          <button
+                            onClick={() => handleShowMore(transaction)}
+                            className="text-blue-600 hover:text-blue-900 focus:outline-none transition-colors duration-200"
+                          >
+                            View Details
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
                 </tbody>
               </table>
             ) : (
@@ -542,7 +631,7 @@ export default function Dashboard() {
           </div>
         </div>
       </div>
-      {/* Modal */}
+      {/* Modal for Transaction Details */}
       {selectedTransaction && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50">
           <div className="bg-white rounded-2xl shadow-xl p-8 max-w-md w-full">
@@ -552,50 +641,83 @@ export default function Dashboard() {
               </h2>
               <button
                 onClick={handleCloseModal}
-                className="text-gray-500 hover:text-gray-700 focus:outline-none transition-colors duration-200"
+                className="text-gray-500 hover:text-gray-700 focus:outline-none"
               >
                 <X size={20} />
               </button>
             </div>
-            <div className="space-y-2">
-              <p>
-                <span className="font-medium text-gray-700">Date:</span>{" "}
-                {selectedTransaction.date
-                  ? formatDate(selectedTransaction.date)
-                  : "No Date"}
-              </p>
-              <p>
-                <span className="font-medium text-gray-700">
-                  Transaction ID:
-                </span>{" "}
-                {selectedTransaction.transactionId || "N/A"}
-              </p>
-              <p>
-                <span className="font-medium text-gray-700">Worker ID:</span>{" "}
-                {selectedTransaction.workerId || "N/A"}
-              </p>
-              <p>
-                <span className="font-medium text-gray-700">Worker Name:</span>{" "}
-                {selectedTransaction.workerName || "N/A"}
-              </p>
-              <p>
-                <span className="font-medium text-gray-700">Amount:</span>{" "}
-                {selectedTransaction.amount
-                  ? formatCurrency(selectedTransaction.amount)
-                  : "N/A"}
-              </p>
-              <p>
-                <span className="font-medium text-gray-700">Type:</span>{" "}
-                {selectedTransaction.type || "N/A"}
-              </p>
-              <p>
-                <span className="font-medium text-gray-700">Status:</span>{" "}
-                {selectedTransaction.status || "N/A"}
-              </p>
+            <div className="space-y-4">
+              <div className="border-b pb-4">
+                <p className="text-sm text-gray-500">Transaction Date</p>
+                <p className="text-base font-medium">
+                  {selectedTransaction.timestamp?.seconds
+                    ? new Date(
+                        selectedTransaction.timestamp.seconds * 1000
+                      ).toLocaleString("en-US", {
+                        year: "numeric",
+                        month: "long",
+                        day: "numeric",
+                        hour: "2-digit",
+                        minute: "2-digit",
+                      })
+                    : "No Date"}
+                </p>
+              </div>
+              <div className="border-b pb-4">
+                <p className="text-sm text-gray-500">Transaction ID</p>
+                <p className="text-base font-medium">
+                  {selectedTransaction.transactionid || "N/A"}
+                </p>
+              </div>
+              <div className="border-b pb-4">
+                <p className="text-sm text-gray-500">Amount</p>
+                <p className="text-base font-medium">
+                  {formatCurrency(selectedTransaction.amount)}
+                </p>
+              </div>
+              <div className="border-b pb-4">
+                <p className="text-sm text-gray-500">Category</p>
+                <span
+                  className={`px-2 py-1 inline-flex text-xs leading-5 font-semibold rounded-full
+                  ${
+                    selectedTransaction.category === "Payroll"
+                      ? "bg-blue-100 text-blue-800"
+                      : selectedTransaction.category === "Bonus"
+                      ? "bg-green-100 text-green-800"
+                      : "bg-purple-100 text-purple-800"
+                  }`}
+                >
+                  {selectedTransaction.category}
+                </span>
+              </div>
+              <div className="border-b pb-4">
+                <p className="text-sm text-gray-500">Status</p>
+                <span
+                  className={`px-2 py-1 inline-flex text-xs leading-5 font-semibold rounded-full
+                  ${
+                    selectedTransaction.status === "Success"
+                      ? "bg-green-100 text-green-800"
+                      : selectedTransaction.status === "Failed"
+                      ? "bg-red-100 text-red-800"
+                      : "bg-yellow-100 text-yellow-800"
+                  }`}
+                >
+                  {selectedTransaction.status}
+                </span>
+              </div>
+              {selectedTransaction.transactionHash && (
+                <div className="border-b pb-4">
+                  <p className="text-sm text-gray-500">Transaction Hash</p>
+                  <p className="text-xs font-mono break-all">
+                    {selectedTransaction.transactionHash}
+                  </p>
+                </div>
+              )}
             </div>
           </div>
         </div>
       )}
+      <ToastContainer />
     </div>
   );
 }

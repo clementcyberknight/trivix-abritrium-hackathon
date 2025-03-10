@@ -7,6 +7,8 @@ import {
   addDoc,
   getDoc,
   query,
+  Timestamp,
+  getDocs,
   orderBy, // Import orderBy
   where, // Import where
   arrayUnion,
@@ -15,6 +17,7 @@ import {
   onSnapshot,
   doc,
   serverTimestamp,
+  deleteDoc,
 } from "firebase/firestore";
 import {
   getAuth,
@@ -56,6 +59,7 @@ export {
   where, // Import where
   getIdToken,
   getFirestore,
+  getDocs,
   writeBatch,
   onSnapshot,
   collection,
@@ -63,6 +67,8 @@ export {
   setDoc,
   arrayUnion,
   getDoc,
+  Timestamp,
   doc,
   serverTimestamp,
+  deleteDoc,
 };

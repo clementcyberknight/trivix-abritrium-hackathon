@@ -252,9 +252,6 @@ const SignupPage = () => {
     }
   };
 
-  // Removed useEffect for firebaseUser (not needed for manual signup)
-  // Removed useEffect for account (not needed for manual signup)
-
   return (
     <div className="min-h-screen flex bg-gradient-to-br from-white to-blue-50">
       <ToastContainer />
