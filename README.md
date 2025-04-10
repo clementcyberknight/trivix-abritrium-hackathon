@@ -1,5 +1,15 @@
 # Trivix: Streamlining Workforce Payroll & Payments with Web3 Technology
 
+
+```js
+Deployed Contract Address on Arbitrum Stylus
+
+//Pay worker Contract
+const payWorkers = "0x21d9c6451a1907b555b012ef7292a879ab9ce33e";
+//MockUSDC Token Contract
+const MockUSDC = "0x80f55661F53fa615249cBACF6C88a4399034B99D";
+``` 
+
 ## Overview
 
 Trivix is a modern web3 fintech platform designed to simplify and enhance how businesses manage their workforce payroll and contractor payments,Vendor payment, leveraging the power of Web3 technology for secure, transparent, and efficient transactions.
@@ -34,6 +44,8 @@ Trivix is a modern web3 fintech platform designed to simplify and enhance how bu
 *   **Frontend:** React, Next.js, Tailwind CSS, Lucide React (icons), React Toastify (notifications)
 *   **Backend & Authentication:** Firebase Authentication, Firestore Database, Thirdweb (wallet connection)
 *   **Web3 Integration:** Thirdweb Provider, Web3.js, Abitrium stylus smart contract, ether js
+
+
 
 
 
